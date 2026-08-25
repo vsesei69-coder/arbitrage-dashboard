@@ -4,9 +4,9 @@ NEYTIS Arbitrage API — бэкенд для дашборда арбитража
 """
 import logging
 from datetime import datetime, timezone
-from typing import Dict, Any, List, Optional
 from enum import Enum
-from fastapi import APIRouter, Query, HTTPException
+
+from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel
 
 logger = logging.getLogger("neytis.arbitrage")
@@ -25,15 +25,15 @@ class ArbExecuteRequest(BaseModel):
     from_exchange: str
     to_exchange: str
     mode: ArbMode = ArbMode.PERSONAL
-    connection_type: str = "api"  # "api" or "ssh"
+    connection_type: str = "api"
 
 
 class ArbitrageEngine:
     """Ядро арбитража — сканирует спреды, исполняет ордера."""
 
     def __init__(self):
-        self._active_spreads: List[Dict] = []
-        self._trades: List[Dict] = []
+        self._active_spreads: list[dict] = []
+        self._trades: list[dict] = []
         self._union_balance: float = 0.0
         self._split_participant: float = 0.60
         self._split_union: float = 0.40
@@ -45,8 +45,7 @@ class ArbitrageEngine:
     def get_real_engine(self):
         return self._real_engine
 
-    async def get_spreads(self, mode: ArbMode) -> List[Dict]:
-        """Получить текущие спреды. Нейтис подставляет биржи автоматически."""
+    async def get_spreads(self, mode: ArbMode) -> list[dict]:
         try:
             from bot.exchange.universal_exchange_adapter import UniversalExchangeAdapter
             adapter = UniversalExchangeAdapter()
@@ -61,7 +60,7 @@ class ArbitrageEngine:
                     try:
                         ticker = await adapter.fetch_ticker(ex, pair)
                         prices[ex] = ticker.get("last", 0)
-                    except Exception:
+                    except (ValueError, KeyError, ConnectionError):
                         continue
                 if len(prices) >= 2:
                     sorted_p = sorted(prices.items(), key=lambda x: x[1])
@@ -82,34 +81,31 @@ class ArbitrageEngine:
             logger.warning("UniversalExchangeAdapter not available, returning empty")
             return []
 
-    async def get_balances(self, mode: ArbMode) -> List[Dict]:
-        """Балансы: personal=по биржам, union=общий фонд."""
+    async def get_balances(self, mode: ArbMode) -> list[dict]:
         try:
             from bot.exchange.universal_exchange_adapter import UniversalExchangeAdapter
             adapter = UniversalExchangeAdapter()
             if mode == ArbMode.UNION:
                 total = await adapter.get_union_fund_balance()
                 return [{"exchange": "Union Fund", "balance_usd": total, "allocated_pct": 100}]
-            else:
-                connected = await adapter.get_connected_exchanges(scope="personal")
-                balances = []
-                total = 0
-                for ex in connected:
-                    try:
-                        bal = await adapter.fetch_balance(ex)
-                        usd = bal.get("total_usd", 0)
-                        total += usd
-                        balances.append({"exchange": ex, "balance_usd": usd, "allocated_pct": 0})
-                    except Exception:
-                        continue
-                for b in balances:
-                    b["allocated_pct"] = round((b["balance_usd"] / total) * 100, 1) if total > 0 else 0
-                return balances
+            connected = await adapter.get_connected_exchanges(scope="personal")
+            balances = []
+            total = 0
+            for ex in connected:
+                try:
+                    bal = await adapter.fetch_balance(ex)
+                    usd = bal.get("total_usd", 0)
+                    total += usd
+                    balances.append({"exchange": ex, "balance_usd": usd, "allocated_pct": 0})
+                except (ValueError, KeyError, ConnectionError):
+                    continue
+            for b in balances:
+                b["allocated_pct"] = round((b["balance_usd"] / total) * 100, 1) if total > 0 else 0
+            return balances
         except ImportError:
             return []
 
-    async def get_pnl(self, mode: ArbMode) -> Dict:
-        """P&L с учётом сплита 60/40 для union."""
+    async def get_pnl(self, mode: ArbMode) -> dict:
         total_pnl = sum(t.get("profit", 0) for t in self._trades)
         if mode == ArbMode.UNION:
             return {
@@ -120,7 +116,7 @@ class ArbitrageEngine:
             }
         return {"total": total_pnl, "history": [t.get("profit", 0) for t in self._trades[-20:]]}
 
-    async def execute(self, req: ArbExecuteRequest) -> Dict:
+    async def execute(self, req: ArbExecuteRequest) -> dict:
         if req.mode == ArbMode.UNION:
             raise HTTPException(400, "Union fund managed by Neytis only")
         logger.warning(
@@ -143,21 +139,21 @@ class ArbitrageEngine:
         self._trades.append(trade)
         return trade
 
-    async def get_agents_status(self, mode: ArbMode) -> Dict:
+    async def get_agents_status(self, mode: ArbMode) -> dict:
         if self._real_engine is None:
             return {"agents": [], "status": "engine_not_running"}
         try:
             return self._real_engine.get_agents_status(mode)
-        except Exception as e:
+        except (AttributeError, TypeError, RuntimeError) as e:
             logger.error("get_agents_status failed: %s", e)
             return {"agents": [], "status": "error", "error": str(e)}
 
-    async def get_risks(self, mode: ArbMode) -> Dict:
+    async def get_risks(self, mode: ArbMode) -> dict:
         if self._real_engine is None:
             return {"metrics": [], "status": "engine_not_running"}
         try:
             return self._real_engine.get_risks(mode)
-        except Exception as e:
+        except (AttributeError, TypeError, RuntimeError) as e:
             logger.error("get_risks failed: %s", e)
             return {"metrics": [], "status": "error", "error": str(e)}
 
@@ -166,49 +162,49 @@ _engine = ArbitrageEngine()
 
 
 @router.get("/spreads")
-async def get_spreads(mode: ArbMode = Query(ArbMode.PERSONAL)) -> Dict[str, Any]:
+async def api_get_spreads(mode: ArbMode = Query(ArbMode.PERSONAL)) -> dict:  # noqa: B008
     items = await _engine.get_spreads(mode)
     return {"items": items, "mode": mode.value}
 
 
 @router.get("/balances")
-async def get_balances(mode: ArbMode = Query(ArbMode.PERSONAL)) -> Dict[str, Any]:
+async def api_get_balances(mode: ArbMode = Query(ArbMode.PERSONAL)) -> dict:  # noqa: B008
     balances = await _engine.get_balances(mode)
     return {"balances": balances, "mode": mode.value}
 
 
 @router.get("/pnl")
-async def get_pnl(mode: ArbMode = Query(ArbMode.PERSONAL)) -> Dict[str, Any]:
+async def api_get_pnl(mode: ArbMode = Query(ArbMode.PERSONAL)) -> dict:  # noqa: B008
     return await _engine.get_pnl(mode)
 
 
 @router.get("/agents")
-async def get_agents(mode: ArbMode = Query(ArbMode.PERSONAL)) -> Dict[str, Any]:
+async def api_get_agents(mode: ArbMode = Query(ArbMode.PERSONAL)) -> dict:  # noqa: B008
     result = await _engine.get_agents_status(mode)
     result["mode"] = mode.value
     return result
 
 
 @router.get("/risks")
-async def get_risks(mode: ArbMode = Query(ArbMode.PERSONAL)) -> Dict[str, Any]:
+async def api_get_risks(mode: ArbMode = Query(ArbMode.PERSONAL)) -> dict:  # noqa: B008
     result = await _engine.get_risks(mode)
     result["mode"] = mode.value
     return result
 
 
 @router.get("/trades/recent")
-async def get_recent_trades(mode: ArbMode = Query(ArbMode.PERSONAL), limit: int = 20) -> Dict[str, Any]:
+async def api_get_recent_trades(mode: ArbMode = Query(ArbMode.PERSONAL), limit: int = 20) -> dict:  # noqa: B008
     trades = _engine._trades[-limit:]
     return {"trades": trades, "mode": mode.value}
 
 
 @router.post("/execute")
-async def execute_arbitrage(req: ArbExecuteRequest) -> Dict[str, Any]:
+async def api_execute_arbitrage(req: ArbExecuteRequest) -> dict:
     trade = await _engine.execute(req)
     return {"status": "ok", "trade": trade, "simulation": True}
 
 
 @router.get("/engine")
-async def get_engine_status() -> Dict[str, Any]:
+async def api_get_engine_status() -> dict:
     running = _engine.get_real_engine() is not None
     return {"engine_running": running, "status": "engine_not_running" if not running else "running"}
